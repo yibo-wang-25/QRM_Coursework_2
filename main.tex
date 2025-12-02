@@ -1,0 +1,139 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{color}
+\usepackage{listings}
+\usepackage{setspace}
+
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+\section*{Introduction}
+
+\section*{Part (i): GARCH(1,1) Modelling with Normal Innovations}
+
+\section*{Part (ii): Normalised Student-t Distribution}
+
+\section*{Part (iii): Extreme Value Theory (EVT)}
+
+While the Student-t distribution seems to capture the entire distribution smoothly, Extreme Value Theory (EVT) allows us to model the tail specifically. In practice, condition EVT applies to financial time series the best. In this part we use this method and use GPD to fit our standardised residues.
+
+\subsection*{Conditional EVT}
+We quote the essential result from Pickands-Balkema-de Haan Theorem, utilised upon conditional settings. For a sufficiently high threshold $u$, the distribution of excesses $Y = Z - u$ (conditional on $Z > u$) converges to the Generalised Pareto Distribution (GPD):
+\begin{equation}
+    G_{\xi, \beta}(y) = 
+    \begin{cases} 
+        1 - (1 + \xi y / \beta)^{-1/\xi} & \text{if } \xi \neq 0 \\
+        1 - \exp(-y / \beta) & \text{if } \xi = 0
+    \end{cases}
+\end{equation}
+where $\xi$ is the shape parameter and $\beta$ is the scale parameter.
+
+\subsection*{Threshold Selection}
+Selecting an appropriate threshold $u$ involves a trade-off between bias (threshold too low, the mass excess function looks not linear enough, hence asymptotic results doesn't hold) and variance (threshold too high, too few data points).
+
+We further note an important point that given assumption that TSLA behaves heavy-tailed, we must have a positive scale, else we might get a light-tailed Type-II GPD fit. Based on these, we employed two tools:
+\begin{itemize}
+    \item \textbf{Sample Mean Excess Function (MEF):} Defined as $e_n(u) = \frac{1}{N_u} \sum_{i=1}^{N_u} (Z_{(i)} - u)$. The plot of $e_n(u)$ against $u$ should be as linear as possible for. Our analysis showed a positive linear slope, indicating $\xi > 0$.
+    \item \textbf{Parameter Stability Plots:} We looked for regions where the estimated $\hat{\xi}$ and $\hat{\sigma}^* = \hat{\sigma} - \hat{\xi} u$ remained stable across different thresholds.
+\end{itemize}
+
+
+\includegraphics[scale=0.5]{Assets/Part_iii_mean_excess_function.png}
+% \includegraphics{Assets/Part_iii_GPD_stability.png}    
+
+Based on these, we selected a threshold of \textbf{$u = 1.5$}. This resulted in 122 exceedances, representing approximately 10.8\% of the positive residuals, which provides a sufficient sample size for estimation.
+
+\subsection*{GPD Estimation}
+Fitting the GPD to the excesses over $u=1.5$ yielded the following parameters:
+\begin{itemize}
+    \item \textbf{Shape ($\xi$):} 0.0894
+    \item \textbf{Scale ($\beta$):} 0.7007
+\end{itemize}
+The result $\xi > 0$ places the distribution to be Fréchet, confirming the assumption that tails are heavy, which is also consistent with the findings in Part (ii). The diagnostic QQ-plot of the excesses against the fitted GPD shows a strong alignment along the 45-degree line, validating the fit.
+\includegraphics[scale=0.5]{Assets/Part_iii_qq_plot_exceedances.png}
+
+
+\section*{Part (iv): Risk Forecasting and Backtesting}
+
+In this final section, we perform a backtest to evaluate the performance of the different distributional assumptions, based on their VaR and ES forecasts.
+
+\subsection*{VaR Forecasting}
+We generate one-step-ahead forecasts for the testing period (26 Nov 2021 -- 25 Nov 2022). To reduce computational load, we set the GARCH parameters ($\omega, \alpha, \beta, \nu, \xi$) estimated on the training set to be held constant. However, the conditional volatility $\sigma_{t+1}$ is updated dynamically using the realised losses in the test set.
+
+The Value-at-Risk (VaR) at level $\alpha$ is computed as:
+\begin{equation}
+    \text{VaR}_\alpha(L_{t+1}) = \mu_{t+1} + \sigma_{t+1} q_\alpha(Z_{t+1})
+\end{equation}
+where $q_\alpha(Z)$ is the $\alpha$-quantile of the innovation distribution. Specifically, the VaR under normal, Student-t and GPD distributions are:
+\begin{itemize}
+\item Normal: $\hat{\text{VaR}}_\alpha(L_{t+1}) = \hat{\mu_{t+1}} + \sigma_{t+1} \Phi^{-1}(\alpha)$
+\item Student-t: $\hat{\text{VaR}}_\alpha(L_{t+1}) = \hat{\mu_{t+1}} + \sigma_{t+1} (t+1)_{\hat{\nu}}^{-1}(\alpha) \sqrt{\frac{\hat{\nu}-2}{\hat{\nu}}}$
+\item GPD: $\hat{\text{VaR}}_\alpha(L_{t+1}) = \hat{\mu_{t+1}} + \hat{\sigma}_{t+1} (u+\frac{\hat{\beta}}{\hat{\xi}}((\frac{1-\alpha}{1-\hat{F}(u)})^{-\hat{\xi}}-1))$
+\end{itemize}
+
+For the EVT specification, our code implements a conditional logic. Let $p_u = N_u / N$ be the empirical probability of exceeding the threshold $u$. The forecast depends on the target confidence level $\alpha$:
+
+\textbf{Case 1: Tail Region ($\alpha \leq p_u$)} \\
+If the target probability is in the extreme tail (e.g., 1\% risk vs 10\% threshold exceedance), we use GPD.
+
+\textbf{Case 2: Body Region ($\alpha > p_u$)} \\
+If the target probability is not in the tail defined by $u$, the EVT model is not applicable. In the code, we handle this by falling back to the Student-t model.
+
+
+\subsection*{Backtesting Tests}
+We evaluate the VaR forecasts using the Kupiec Unconditional Coverage Test. The number of hits $x$ follows a Binomial distribution \(B(T,p)\) under the null hypothesis. The likelihood ratio is:
+\begin{equation}
+    LR_{uc} = -2 \ln \left( \frac{(1-p)^{T-x} p^x}{(1-\hat{p})^{T-x} \hat{p}^x} \right) \sim \chi^2(1)
+\end{equation}
+where $p$ is the target coverage (e.g., 0.05 or 0.01) and $\hat{p} = x/T$ is the observed failure rate.
+
+\subsection*{Results and Analysis}
+The backtesting results for the 252 trading days in the test set are summarised in Table \ref{tab:backtest}.
+
+\begin{table}[H]
+    \centering
+    \caption{Backtesting (Test Size $N=252$)}
+    \label{tab:backtest}
+    \begin{tabular}{lcccccl}
+        \toprule
+        \textbf{Model} & \textbf{Level} & \textbf{Hits} & \textbf{Hit Rate} & \textbf{Target} & \textbf{LR stat} & \textbf{p-value} \\
+        \midrule
+        \multicolumn{7}{l}{\textit{95\% Confidence Level}} \\
+        Normal & 95\% & 24 & 9.52\% & 5\% & 8.68 & 0.003 (Fail) \\
+        Student-t & 95\% & 26 & 10.32\% & 5\% & 11.63 & 0.000 (Fail) \\
+        EVT & 95\% & 26 & 10.32\% & 5\% & 11.63 & 0.000 (Fail) \\
+        \midrule
+        \multicolumn{7}{l}{\textit{99\% Confidence Level}} \\
+        Normal & 99\% & 5 & 1.98\% & 1\% & 1.92 & 0.166 (Poor) \\
+        Student-t & 99\% & 2 & 0.79\% & 1\% & 0.12 & 0.733 (Pass) \\
+        EVT & 99\% & 2 & 0.79\% & 1\% & 0.12 & 0.733 (Pass) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textbf{Analysis of 95\% VaR} \\
+We witness that all models failed at the 95\% level, producing hit rates ($\approx 10\%$) roughly double the expected 5\%. This systematic failure is likely not due to the distributional assumption, but rather due to a exterior market factor and regime shift. The training data (pre-Nov 2021) captured a long bullish period for Tesla. The testing data (Nov 2021 - Nov 2022) coincided with the global tech sell-off and rising interest rates. Because we used static parameters estimated during bull market, the GARCH model was insufficiently reactive to the heightened baseline volatility of the bear market. \\
+
+\textbf{Analysis of 99\% VaR} \\
+At the 99\% level, the difference in tail modelling becomes decisive.
+\begin{itemize}
+    \item The Normal model produced 5 violations (target $\approx 2.5$), a hit rate of nearly 2\%. While the p-value (0.166) is not below 0.05 due to the small sample size, the high hit rate indicates an underestimation of risk.
+    \item The Student-t and EVT models performed exceptionally well, with only 2 violations (0.79\%). This highlights that even with imperfect volatility calibration (static parameters), correctly modelling the shape of the tail ($\nu \approx 3.8$ or $\xi \approx 0.09$) provides a robust buffer against extreme events.
+\end{itemize}
+
+
+\section*{Conclusion}
+
+\end{document}
